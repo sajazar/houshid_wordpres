@@ -1,0 +1,18 @@
+<?php
+if(!defined('ABSPATH'))exit;
+class Hooshid_AI{
+ public function __construct(){add_action('rest_api_init',[$this,'routes']);}
+ public function routes(){
+  register_rest_route('hooshid/v1','/chat',['methods'=>'POST','callback'=>[$this,'chat'],'permission_callback'=>[$this,'permission']]);
+  register_rest_route('hooshid/v1','/books/(?P<id>\\d+)/page/(?P<page>\\d+)',['methods'=>'GET','callback'=>[$this,'page'],'permission_callback'=>[$this,'permission']]);
+  register_rest_route('hooshid/v1','/books/(?P<id>\\d+)/page',['methods'=>'POST','callback'=>[$this,'save_page'],'permission_callback'=>[$this,'permission']]);
+  register_rest_route('hooshid/v1','/command',['methods'=>'POST','callback'=>[$this,'command'],'permission_callback'=>[$this,'permission']]);
+ }
+ public function permission(){return is_user_logged_in()&&wp_verify_nonce($_SERVER['HTTP_X_WP_NONCE']??'','wp_rest');}
+ private function norm($s){$s=str_replace(['ي','ى','ك'],['ی','ی','ک'],(string)$s);return preg_replace('/\\s+/u',' ',trim($s));}
+ private function digits($s){return strtr($s,['۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9']);}
+ public function page(WP_REST_Request $r){$row=Hooshid_Books::page(absint($r['id']),absint($r['page']));if(!$row)return new WP_Error('not_found','صفحه پیدا نشد',['status'=>404]);$row->pdf_url=wp_get_attachment_url($row->attachment_id);return ['book'=>$row];}
+ public function save_page(WP_REST_Request $r){$book=absint($r['id']);$page=absint($r->get_param('page_number'));$text=sanitize_textarea_field($r->get_param('page_text'));global $wpdb;$wpdb->replace($wpdb->prefix.'hooshid_book_pages',['book_id'=>$book,'page_number'=>$page,'page_text'=>$text],['%d','%d','%s']);return ['saved'=>true];}
+ public function command(WP_REST_Request $r){$q=$this->norm($this->digits($r->get_param('message')));preg_match('/(?:صفحه|پیج)\\s*(\\d+)/u',$q,$m);$page=!empty($m[1])?(int)$m[1]:0;$grades=['اول'=>1,'دوم'=>2,'سوم'=>3,'چهارم'=>4,'پنجم'=>5,'ششم'=>6];$grade=0;foreach($grades as $w=>$n)if(mb_strpos($q,$w)!==false){$grade=$n;break;}$books=Hooshid_Books::all();foreach($books as $b)if((!$grade||(int)$b->grade===$grade)&&(mb_strpos($q,$this->norm($b->subject))!==false||mb_strpos($q,$this->norm($b->title))!==false)&&$page)return ['action'=>'open_book_page','book_id'=>(int)$b->id,'grade'=>(int)$b->grade,'subject'=>$b->subject,'page'=>$page,'explain'=>mb_strpos($q,'توضیح')!==false||mb_strpos($q,'شرح')!==false];return ['action'=>'chat'];}
+ public function chat(WP_REST_Request $r){$key=get_option('hooshid_openai_key','');$model=get_option('hooshid_openai_model','gpt-6-luna');if(!$key)return new WP_Error('no_api_key','کلید OpenAI تنظیم نشده است',['status'=>400]);$message=sanitize_textarea_field($r->get_param('message'));$text=sanitize_textarea_field($r->get_param('page_text')??'');if($text)$message.="\\n\\nمتن صفحه کتاب:\\n".$text; $res=wp_remote_post('https://api.openai.com/v1/responses',['timeout'=>90,'headers'=>['Authorization'=>'Bearer '.$key,'Content-Type'=>'application/json'],'body'=>wp_json_encode(['model'=>$model,'instructions'=>'تو دستیار آموزشی هوشید هستی. فارسی، روشن و مرحله‌به‌مرحله پاسخ بده. متن صفحه کتاب، منبع اصلی سؤال درباره همان صفحه است.','input'=>$message])]);if(is_wp_error($res))return $res;$body=json_decode(wp_remote_retrieve_body($res),true);$code=wp_remote_retrieve_response_code($res);if($code<200||$code>=300)return new WP_Error('openai_error',$body['error']['message']??'خطا در OpenAI',['status'=>502]);return ['reply'=>$body['output_text']??'پاسخی دریافت نشد.'];}
+}
